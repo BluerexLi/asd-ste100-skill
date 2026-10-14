@@ -93,6 +93,10 @@ One limit worth stating up front: this fixes the form of a text, not its substan
 
 - **Hebrew:** [g4lb/asd-ste100-hebrew-skill](https://github.com/g4lb/asd-ste100-hebrew-skill) is a Hebrew port of this skill. It includes a Hebrew linter. ASD-STE100 defines English only, so the Hebrew rules are an adaptation, not an official standard.
 
+## Related Tools
+
+- [meiluosi/rewrite-fidelity-skill](https://github.com/meiluosi/rewrite-fidelity-skill) compares the original text with the rewrite. It flags changes in meaning and modality. It uses pattern matching, so check each flag yourself.
+
 ## Sources
 
 - [ASD-STE100 official site](https://www.asd-ste100.org/)
