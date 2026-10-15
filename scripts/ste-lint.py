@@ -91,6 +91,8 @@ STANDALONE_LINE = re.compile(r"^ {0,3}(?:#|<|(?:[-*_=] *){3,}$)")
 BLOCKQUOTE_PREFIX = re.compile(r"^ {0,3}(?:> ?)+")
 # Any list marker at any depth starts a new prose block.
 ANY_LIST_ITEM = re.compile(r"^\s*(?:[-*+]|[0-9]+[.)])(?:\s|$)")
+# A letter or a digit: a token without one is punctuation, not a word.
+WORD_CHAR = re.compile(r"[^\W_]")
 # A token that ends in terminal punctuation, optionally followed by closing
 # quotes, brackets, or Markdown emphasis markers ("**Lead.**").
 SENTENCE_END = re.compile(r"[.!?][\"'”’)\]*_]*$")
@@ -104,6 +106,15 @@ DOTTED_ABBREVIATION = re.compile(r"(?:[a-z]\.){2,}", re.I)
 
 def _word_re(base):
     return re.compile(r"\b" + base + r"(?:s|es|ed|d|ing)?\b", re.I)
+
+
+def _count_words(text):
+    """Count whitespace-separated tokens that contain a letter or a digit.
+
+    Bare punctuation is not a word: a comma left behind by a masked code
+    span, or a spaced em dash, does not make a sentence longer.
+    """
+    return sum(1 for token in text.split() if WORD_CHAR.search(token))
 
 
 def _mask_inline_code(text):
@@ -151,7 +162,7 @@ def _long_sentence_findings(pieces, filename):
     findings = []
     starts = _sentence_starts(joined)
     for start, end in zip(starts, starts[1:] + [len(joined)]):
-        n = len(joined[start:end].split())
+        n = _count_words(joined[start:end])
         if n <= MAX_WORDS:
             continue
         index = bisect.bisect_right(offsets, start) - 1
@@ -598,6 +609,16 @@ def selftest():
     findings, _ = lint(f"- term0 {twenty_five}")
     long_sentences = [f for f in findings if f["rule"] == "long-sentence"]
     assert [(f["match"], f["col"]) for f in long_sentences] == [("26 words", 3)], long_sentences
+    # bare punctuation is not a word: code-span separators and spaced dashes
+    for separator in (", ", " ", " / "):
+        names = separator.join(f"`a{number}`" for number in range(30))
+        findings, _ = lint(f"The adapters are {names}.")
+        assert not any(f["rule"] == "long-sentence" for f in findings), (separator, findings)
+    findings, _ = lint(" ".join(f"term{number}" for number in range(1, 25)) + " — term25.")
+    assert not any(f["rule"] == "long-sentence" for f in findings), findings
+    findings, _ = lint(f"Use `make` — {twenty_five}")
+    long_sentences = [f for f in findings if f["rule"] == "long-sentence"]
+    assert [f["match"] for f in long_sentences] == ["26 words"], long_sentences
     # a long block stays linear: one short sentence per line, no blank lines
     findings, _ = lint("The agent read the log.\n" * 20000)
     assert not any(f["rule"] == "long-sentence" for f in findings)
