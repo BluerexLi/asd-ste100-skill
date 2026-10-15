@@ -331,6 +331,7 @@ def lint(text, filename="<stdin>"):
     # consecutive prose lines form one block, so wrapped sentences count once
     block = []
     in_quote = False
+    after_boundary = True
 
     def flush():
         findings.extend(_long_sentence_findings(block, filename))
@@ -340,7 +341,7 @@ def lint(text, filename="<stdin>"):
         if CODE_FENCE.match(raw_line.strip()):
             flush()
             in_fence = not in_fence
-            in_quote = False  # an unquoted fence ends any quote
+            after_boundary = True
             continue
         if in_fence:
             continue
@@ -351,15 +352,19 @@ def lint(text, filename="<stdin>"):
         # judge block boundaries on the text inside any blockquote prefix
         content = raw_line[quote.end():] if quote else raw_line
         # a GitHub alert marker is a label that stands alone, as a heading does.
-        # GitHub shows no alert in a nested quote or in a list item. The linter
-        # skips nested quotes but does not track lists.
-        alert = (quote and not in_quote and quote.group().count(">") == 1
+        # Accept it only in an unindented quote of one level after a blank line,
+        # a fence, or at the start of the text. Elsewhere a list item or a lazy
+        # continuation line can hold the quote, and GitHub shows the marker as
+        # text. The linter does not track raw HTML elements around the quote.
+        alert = (raw_line.startswith(">") and after_boundary
+                 and quote.group().count(">") == 1
                  and GITHUB_ALERT.fullmatch(content.strip()))
         standalone = STANDALONE_LINE.match(content) or alert
         if (is_table or not content.strip() or standalone
                 or ANY_LIST_ITEM.match(content) or is_quote != in_quote):
             flush()
         in_quote = is_quote
+        after_boundary = not raw_line.strip()
         for segment, source_column in segments:
             line = _mask_inline_code(segment)
             words_total += len(line.split())
@@ -577,15 +582,18 @@ def selftest():
         assert not any(f["rule"] == "long-sentence" for f in findings), (sep, findings)
     # a GitHub alert marker on the first line of a quote is not a word of the body
     body = " ".join(["word"] * 25) + "."
-    for alert in ("> [!NOTE]", "> [!tip]", ">[!Warning]", "   >  [!CAUTION]  "):
+    for alert in ("> [!NOTE]", "> [!tip]", ">[!Warning]", ">  [!CAUTION]  "):
         findings, _ = lint(f"{alert}\n> {body}")
         assert not any(f["rule"] == "long-sentence" for f in findings), (alert, findings)
-    for text in (f"Text.\n> [!NOTE]\n> {body}", f"> Text.\n~~~\ncode\n~~~\n> [!NOTE]\n> {body}"):
+    for text in (f"Text.\n\n> [!NOTE]\n> {body}", f"> Text.\n~~~\ncode\n~~~\n> [!NOTE]\n> {body}"):
         findings, _ = lint(text)
         assert not any(f["rule"] == "long-sentence" for f in findings), (text, findings)
-    # GitHub shows these markers as text, so they stay words
+    # GitHub shows these markers as text, so they stay words. GitHub shows the
+    # last two as alerts, but no blank line or fence proves that a quote starts.
     for text in (f"> [!FOO]\n> {body}", f"> [!NOTE] {body}", f"> Intro.\n> [!NOTE]\n> {body}",
-                 f"> > [!NOTE]\n> > {body}"):
+                 f"> > [!NOTE]\n> > {body}", f"> Intro.\ncontinuation.\n> [!NOTE]\n> {body}",
+                 f"- Item.\n\n  > [!NOTE]\n  > {body}",
+                 f"Text.\n> [!NOTE]\n> {body}", f"   > [!NOTE]\n   > {body}"):
         findings, _ = lint(text)
         long_sentences = [f for f in findings if f["rule"] == "long-sentence"]
         assert [f["match"] for f in long_sentences] == ["26 words"], (text, long_sentences)
