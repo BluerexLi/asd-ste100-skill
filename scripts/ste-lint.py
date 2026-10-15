@@ -89,6 +89,8 @@ TABLE_SEPARATOR_CELL = re.compile(r"^:?-{3,}:?$")
 # Headings, thematic breaks, front-matter delimiters, and HTML lines stand alone.
 STANDALONE_LINE = re.compile(r"^ {0,3}(?:#|<|(?:[-*_=] *){3,}$)")
 BLOCKQUOTE_PREFIX = re.compile(r"^ {0,3}(?:> ?)+")
+# A GitHub alert marker, alone on the first line of a quote: "> [!NOTE]".
+GITHUB_ALERT = re.compile(r"\[!(?:note|tip|important|warning|caution)\]", re.I)
 # Any list marker at any depth starts a new prose block.
 ANY_LIST_ITEM = re.compile(r"^\s*(?:[-*+]|[0-9]+[.)])(?:\s|$)")
 # A token that ends in terminal punctuation, optionally followed by closing
@@ -338,6 +340,7 @@ def lint(text, filename="<stdin>"):
         if CODE_FENCE.match(raw_line.strip()):
             flush()
             in_fence = not in_fence
+            in_quote = False  # an unquoted fence ends any quote
             continue
         if in_fence:
             continue
@@ -347,7 +350,12 @@ def lint(text, filename="<stdin>"):
         is_quote = bool(quote)
         # judge block boundaries on the text inside any blockquote prefix
         content = raw_line[quote.end():] if quote else raw_line
-        standalone = STANDALONE_LINE.match(content)
+        # a GitHub alert marker is a label that stands alone, as a heading does.
+        # GitHub shows no alert in a nested quote or in a list item. The linter
+        # skips nested quotes but does not track lists.
+        alert = (quote and not in_quote and quote.group().count(">") == 1
+                 and GITHUB_ALERT.fullmatch(content.strip()))
+        standalone = STANDALONE_LINE.match(content) or alert
         if (is_table or not content.strip() or standalone
                 or ANY_LIST_ITEM.match(content) or is_quote != in_quote):
             flush()
@@ -567,6 +575,20 @@ def selftest():
     for sep in ("\n\n", "\n# Heading\n", "\n---\n", "\n- ", "\n> "):
         findings, _ = lint(f"First {twenty} line{sep}Second {twenty} line.")
         assert not any(f["rule"] == "long-sentence" for f in findings), (sep, findings)
+    # a GitHub alert marker on the first line of a quote is not a word of the body
+    body = " ".join(["word"] * 25) + "."
+    for alert in ("> [!NOTE]", "> [!tip]", ">[!Warning]", "   >  [!CAUTION]  "):
+        findings, _ = lint(f"{alert}\n> {body}")
+        assert not any(f["rule"] == "long-sentence" for f in findings), (alert, findings)
+    for text in (f"Text.\n> [!NOTE]\n> {body}", f"> Text.\n~~~\ncode\n~~~\n> [!NOTE]\n> {body}"):
+        findings, _ = lint(text)
+        assert not any(f["rule"] == "long-sentence" for f in findings), (text, findings)
+    # GitHub shows these markers as text, so they stay words
+    for text in (f"> [!FOO]\n> {body}", f"> [!NOTE] {body}", f"> Intro.\n> [!NOTE]\n> {body}",
+                 f"> > [!NOTE]\n> > {body}"):
+        findings, _ = lint(text)
+        long_sentences = [f for f in findings if f["rule"] == "long-sentence"]
+        assert [f["match"] for f in long_sentences] == ["26 words"], (text, long_sentences)
     # a bold or italic lead sentence ends at its closing emphasis marker
     findings, _ = lint(f"**Lead.** The {twenty} more words here now.")
     assert not any(f["rule"] == "long-sentence" for f in findings), findings
