@@ -374,8 +374,11 @@ def lint(text, filename="<stdin>"):
                         seen_synonyms[(gi, base)] = (
                             lineno, source_column + m.start() + 1, m.group(0)
                         )
-            # the blockquote prefix is markup, not words in the sentence
+            # the blockquote prefix and the list marker are markup, not words in the sentence
             skip = quote.end() if quote and not is_table else 0
+            marker = None if is_table else ANY_LIST_ITEM.match(line[skip:])
+            if marker:
+                skip += marker.end()
             if line[skip:].strip():
                 block.append((lineno, source_column + skip, line[skip:]))
             if is_table:
@@ -587,6 +590,14 @@ def selftest():
     # a blockquote prefix is not a word in a wrapped quoted sentence
     findings, _ = lint("> " + "\n> ".join(["word word word word word"] * 5) + ".")
     assert not any(f["rule"] == "long-sentence" for f in findings), findings
+    # a list marker is not a word either, in every marker style
+    twenty_five = " ".join(f"term{number}" for number in range(1, 26)) + "."
+    for marker in ("-", "*", "+", "1.", "1)", "  -", "> -"):
+        findings, _ = lint(f"{marker} {twenty_five}")
+        assert not any(f["rule"] == "long-sentence" for f in findings), (marker, findings)
+    findings, _ = lint(f"- term0 {twenty_five}")
+    long_sentences = [f for f in findings if f["rule"] == "long-sentence"]
+    assert [(f["match"], f["col"]) for f in long_sentences] == [("26 words", 3)], long_sentences
     # a long block stays linear: one short sentence per line, no blank lines
     findings, _ = lint("The agent read the log.\n" * 20000)
     assert not any(f["rule"] == "long-sentence" for f in findings)
