@@ -387,7 +387,7 @@ def lint(text, filename="<stdin>"):
                         )
             # the blockquote prefix and the list marker are markup, not words in the sentence
             skip = quote.end() if quote and not is_table else 0
-            marker = None if is_table else ANY_LIST_ITEM.match(line[skip:])
+            marker = None if is_table else ANY_LIST_ITEM.match(segment[skip:])
             if marker:
                 skip += marker.end()
             if line[skip:].strip():
@@ -609,6 +609,10 @@ def selftest():
     findings, _ = lint(f"- term0 {twenty_five}")
     long_sentences = [f for f in findings if f["rule"] == "long-sentence"]
     assert [(f["match"], f["col"]) for f in long_sentences] == [("26 words", 3)], long_sentences
+    # a code span at the line start does not turn the next token into a list marker
+    findings, _ = lint(f"`label` 1) {twenty_five}")
+    long_sentences = [f for f in findings if f["rule"] == "long-sentence"]
+    assert [f["match"] for f in long_sentences] == ["26 words"], long_sentences
     # bare punctuation is not a word: code-span separators and spaced dashes
     for separator in (", ", " ", " / "):
         names = separator.join(f"`a{number}`" for number in range(30))
