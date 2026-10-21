@@ -91,6 +91,14 @@ STANDALONE_LINE = re.compile(r"^ {0,3}(?:#|<|(?:[-*_=] *){3,}$)")
 BLOCKQUOTE_PREFIX = re.compile(r"^ {0,3}(?:> ?)+")
 # A GitHub alert marker, alone on the first line of a quote: "> [!NOTE]".
 GITHUB_ALERT = re.compile(r"\[!(?:note|tip|important|warning|caution)\]", re.I)
+# Track ordinary block containers, not inline or void tags such as span or hr.
+HTML_BLOCK_TAG = re.compile(
+    r"<(/?)(address|article|aside|blockquote|body|caption|center|dd|details|"
+    r"dialog|dir|div|dl|dt|fieldset|figcaption|figure|footer|form|h[1-6]|"
+    r"header|hgroup|html|iframe|legend|li|main|menu|nav|noframes|ol|"
+    r"optgroup|option|p|pre|script|search|section|style|summary|table|"
+    r"tbody|td|textarea|tfoot|th|thead|title|tr|ul)(?=[\s/>])[^>]*>", re.I,
+)
 # Any list marker at any depth starts a new prose block.
 ANY_LIST_ITEM = re.compile(r"^\s*(?:[-*+]|[0-9]+[.)])(?:\s|$)")
 # A letter or a digit: a token without one is punctuation, not a word.
@@ -335,6 +343,7 @@ def lint(text, filename="<stdin>"):
     findings = []
     words_total = 0
     in_fence = False
+    html_containers = []
     lines = text.splitlines()
     table_cells = _markdown_table_cells(lines)
     # first occurrence of each synonym-group member: (group_idx, base) -> (line, col, match)
@@ -356,6 +365,16 @@ def lint(text, filename="<stdin>"):
             continue
         if in_fence:
             continue
+        if HTML_BLOCK_TAG.match(raw_line.lstrip()):
+            for tag in HTML_BLOCK_TAG.finditer(_mask_inline_code(raw_line)):
+                name = tag.group(2).lower()
+                if tag.group(1):
+                    if name in html_containers:
+                        while html_containers:
+                            if html_containers.pop() == name:
+                                break
+                elif not tag.group().endswith("/>"):
+                    html_containers.append(name)
         segments = table_cells.get(lineno - 1, [(raw_line, 0)])
         is_table = (lineno - 1) in table_cells
         quote = BLOCKQUOTE_PREFIX.match(raw_line)
@@ -366,8 +385,8 @@ def lint(text, filename="<stdin>"):
         # Accept it only in an unindented quote of one level after a blank line,
         # a fence, or at the start of the text. Elsewhere a list item or a lazy
         # continuation line can hold the quote, and GitHub shows the marker as
-        # text. The linter does not track raw HTML elements around the quote.
-        alert = (raw_line.startswith(">") and after_boundary
+        # text. Markers inside HTML containers are also plain text.
+        alert = (not html_containers and raw_line.startswith(">") and after_boundary
                  and quote.group().count(">") == 1
                  and GITHUB_ALERT.fullmatch(content.strip()))
         standalone = STANDALONE_LINE.match(content) or alert
@@ -602,6 +621,29 @@ def selftest():
     for text in (f"Text.\n\n> [!NOTE]\n> {body}", f"> Text.\n~~~\ncode\n~~~\n> [!NOTE]\n> {body}"):
         findings, _ = lint(text)
         assert not any(f["rule"] == "long-sentence" for f in findings), (text, findings)
+    # Inside HTML containers the marker is text: marker plus body is 26 words.
+    for opening, closing in (("<details>", "</details>"),
+                             ('<DIV class="note">', "</DIV>"),
+                             ("<section><details>", "</details></section>")):
+        findings, _ = lint(f"{opening}\n\n> [!NOTE]\n> {body}\n\n{closing}")
+        long_sentences = [f for f in findings if f["rule"] == "long-sentence"]
+        assert [f["match"] for f in long_sentences] == ["26 words"], (opening, findings)
+        findings, _ = lint(f"{opening}\n{closing}\n\n> [!NOTE]\n> {body}")
+        assert not any(f["rule"] == "long-sentence" for f in findings), (opening, findings)
+    findings, _ = lint(f"> [!NOTE]\n> {body}")
+    assert not any(f["rule"] == "long-sentence" for f in findings), findings
+    # An inner close or a fenced closing tag must not close the outer container.
+    for content in ("<details>\n<div>\n</div>",
+                    "<details>\n~~~\n</details>\n~~~"):
+        findings, _ = lint(f"{content}\n\n> [!NOTE]\n> {body}\n\n</details>")
+        long_sentences = [f for f in findings if f["rule"] == "long-sentence"]
+        assert [f["match"] for f in long_sentences] == ["26 words"], (content, findings)
+    # Fenced, commented, inline, void, and self-closing tags do not open containers.
+    for content in ("```html\n<details>\n```", "<!-- <details> -->",
+                    "<span>Text.</span>", "<hr>", "<div />",
+                    "<details></details>", "</details>"):
+        findings, _ = lint(f"{content}\n\n> [!NOTE]\n> {body}")
+        assert not any(f["rule"] == "long-sentence" for f in findings), (content, findings)
     # GitHub shows these markers as text, so they stay words. GitHub shows the
     # last two as alerts, but no blank line or fence proves that a quote starts.
     for text in (f"> [!FOO]\n> {body}", f"> [!NOTE] {body}", f"> Intro.\n> [!NOTE]\n> {body}",
